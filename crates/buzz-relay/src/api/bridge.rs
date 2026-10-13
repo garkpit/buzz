@@ -8334,7 +8334,9 @@ pub(crate) mod postgres_tests {
                 "CREATE SCHEMA {schema}; \
                  CREATE TABLE {schema}.users (LIKE public.users INCLUDING ALL); \
                  CREATE TABLE {schema}.community_bans (LIKE public.community_bans INCLUDING ALL); \
-                 CREATE TABLE {schema}.relay_members (LIKE public.relay_members INCLUDING ALL);"
+                 CREATE TABLE {schema}.relay_members (LIKE public.relay_members INCLUDING ALL); \
+                 CREATE TABLE {schema}.communities (LIKE public.communities INCLUDING ALL); \
+                 CREATE TABLE {schema}.relay_invites (LIKE public.relay_invites INCLUDING ALL);"
             )))
             .execute(state.db.pool())
             .await
@@ -8348,10 +8350,24 @@ pub(crate) mod postgres_tests {
             )
             .await
             .expect("schema pool");
+            for sql in [
+                include_str!("../../../../schema/functions/community_deletion_lock_key.sql"),
+                include_str!("../../../../schema/functions/invite_admission_lock.sql"),
+            ] {
+                sqlx::raw_sql(sql)
+                    .execute(&pool)
+                    .await
+                    .expect("writer lock functions");
+            }
             Arc::get_mut(&mut state).expect("unique state").db = buzz_db::Db::from_pool(pool);
 
             let tenant = fresh_tenant("late-owner.test");
             let other = fresh_tenant("late-owner-other.test");
+            sqlx::query("INSERT INTO communities(id, host) VALUES($1,'late-owner.test')")
+                .bind(tenant.community().as_uuid())
+                .execute(state.db.pool())
+                .await
+                .expect("writer community");
             let (owner, agent) = (Keys::generate(), Keys::generate());
             let agent_bytes = agent.public_key().to_bytes();
 
@@ -8422,12 +8438,6 @@ pub(crate) mod postgres_tests {
                 "{action}: the HTTP request recorded the owner"
             );
 
-            sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-                "ALTER TABLE {schema}.users RENAME TO users_unavailable"
-            )))
-            .execute(&admin)
-            .await
-            .expect("break the owner-to-agent lookup");
             let owner_hex = owner.public_key().to_hex();
             match action {
                 "ban" => state
@@ -8460,6 +8470,12 @@ pub(crate) mod postgres_tests {
                         .expect("removal commits");
                 }
             }
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE {schema}.users RENAME TO users_unavailable"
+            )))
+            .execute(&admin)
+            .await
+            .expect("break the owner-to-agent lookup");
             let revoked = state
                 .revoke_live_access(
                     &tenant,

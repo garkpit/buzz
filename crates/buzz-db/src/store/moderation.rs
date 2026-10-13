@@ -340,6 +340,11 @@ pub async fn ban_member(
     reason: Option<&str>,
     expires_at: Option<DateTime<Utc>>,
 ) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    crate::deletion::DeletionStore::new(pool.clone())
+        .guard_transaction(&mut tx, community)
+        .await?;
+    crate::relay_invite::lock_admission(&mut tx, community).await?;
     sqlx::query(
         r#"
         INSERT INTO community_bans (
@@ -358,9 +363,11 @@ pub async fn ban_member(
     .bind(expires_at)
     .bind(reason)
     .bind(actor)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
+    crate::relay_invite::revoke_banned_issuer_invites(&mut tx, community, pubkey).await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -504,6 +511,11 @@ pub async fn timeout_member(
     muted_until: DateTime<Utc>,
     reason: Option<&str>,
 ) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    crate::deletion::DeletionStore::new(pool.clone())
+        .guard_transaction(&mut tx, community)
+        .await?;
+    crate::relay_invite::lock_admission(&mut tx, community).await?;
     sqlx::query(
         r#"
         INSERT INTO community_bans (
@@ -521,9 +533,11 @@ pub async fn timeout_member(
     .bind(muted_until)
     .bind(reason)
     .bind(actor)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
+    crate::relay_invite::revoke_banned_issuer_invites(&mut tx, community, pubkey).await?;
+    tx.commit().await?;
     Ok(())
 }
 
